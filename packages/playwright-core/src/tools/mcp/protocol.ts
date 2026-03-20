@@ -22,11 +22,15 @@ export type ExtensionCommand = {
   'attachToTab': {
     params: {};
   };
+  'attachToAllTabs': {
+    params: {};
+  };
   'forwardCDPCommand': {
     params: {
       method: string,
       sessionId?: string
       params?: any,
+      tabId?: number,
     };
   };
 };
@@ -37,6 +41,7 @@ export type ExtensionEvents = {
       method: string,
       sessionId?: string
       params?: any,
+      tabId?: number,
     };
   };
 };
