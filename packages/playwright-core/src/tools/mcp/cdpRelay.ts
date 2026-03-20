@@ -305,49 +305,47 @@ export class CDPRelayServer {
         // Forward child session handling.
         if (sessionId)
           break;
-        try {
-          // Try multi-tab: attach to all open browser tabs
-          const { tabs } = await this._extensionConnection!.send('attachToAllTabs', { });
-          debugLogger(`Multi-tab attach: ${tabs?.length ?? 0} tabs`);
-          for (const { tabId, targetInfo } of (tabs || [])) {
-            const tabSessionId = `pw-tab-${this._nextSessionId++}`;
-            this._tabInfos.set(tabSessionId, { targetInfo, tabId });
-            this._sessionToTabId.set(tabSessionId, tabId);
-            debugLogger('Simulating auto-attach for tab', tabId, targetInfo?.url);
-            this._sendToPlaywright({
-              method: 'Target.attachedToTarget',
-              params: {
-                sessionId: tabSessionId,
-                targetInfo: {
-                  ...targetInfo,
-                  attached: true,
-                },
-                waitingForDebugger: false,
-              }
-            });
+        // Attach to the one user-selected tab (existing behavior)
+        const { targetInfo, tabId } = await this._extensionConnection!.send('attachToTab', { });
+        this._connectedTabInfo = {
+          targetInfo,
+          sessionId: `pw-tab-${this._nextSessionId++}`,
+        };
+        // Also store initial tab in _tabInfos for unified routing
+        if (tabId !== undefined)
+          this._tabInfos.set(this._connectedTabInfo.sessionId, { targetInfo, tabId });
+        debugLogger('Simulating auto-attach for initial tab', tabId);
+        this._sendToPlaywright({
+          method: 'Target.attachedToTarget',
+          params: {
+            sessionId: this._connectedTabInfo.sessionId,
+            targetInfo: {
+              ...this._connectedTabInfo.targetInfo,
+              attached: true,
+            },
+            waitingForDebugger: false
           }
-        } catch (e) {
-          // Fall back to single-tab (old extension)
-          debugLogger('attachToAllTabs failed, falling back to attachToTab:', e);
-          const { targetInfo } = await this._extensionConnection!.send('attachToTab', { });
-          this._connectedTabInfo = {
-            targetInfo,
-            sessionId: `pw-tab-${this._nextSessionId++}`,
-          };
-          debugLogger('Simulating auto-attach (single tab)');
-          this._sendToPlaywright({
-            method: 'Target.attachedToTarget',
-            params: {
-              sessionId: this._connectedTabInfo.sessionId,
-              targetInfo: {
-                ...this._connectedTabInfo.targetInfo,
-                attached: true,
-              },
-              waitingForDebugger: false
-            }
-          });
-        }
+        });
         return { };
+      }
+      case 'Target.createTarget': {
+        // Playwright wants to open a new tab — create a real Chrome tab via the extension
+        if (!this._extensionConnection)
+          throw new Error('Extension not connected');
+        const { tabId, targetInfo } = await this._extensionConnection.send('createTab', { url: params?.url });
+        const tabSessionId = `pw-tab-${this._nextSessionId++}`;
+        this._tabInfos.set(tabSessionId, { targetInfo, tabId });
+        this._sessionToTabId.set(tabSessionId, tabId);
+        debugLogger('New playwright tab created', tabId, targetInfo?.url);
+        this._sendToPlaywright({
+          method: 'Target.attachedToTarget',
+          params: {
+            sessionId: tabSessionId,
+            targetInfo: { ...targetInfo, attached: true },
+            waitingForDebugger: false,
+          }
+        });
+        return { targetId: targetInfo?.targetId || String(tabId) };
       }
       case 'Target.getTargetInfo': {
         if (sessionId && this._tabInfos.has(sessionId))

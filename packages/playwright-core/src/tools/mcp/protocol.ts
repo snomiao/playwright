@@ -22,8 +22,8 @@ export type ExtensionCommand = {
   'attachToTab': {
     params: {};
   };
-  'attachToAllTabs': {
-    params: {};
+  'createTab': {
+    params: { url?: string };
   };
   'forwardCDPCommand': {
     params: {
