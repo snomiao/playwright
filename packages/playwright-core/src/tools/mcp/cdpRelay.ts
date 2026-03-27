@@ -116,7 +116,7 @@ export class CDPRelayServer {
   private _connectBrowser(clientInfo: ClientInfo, forceNewTab: boolean) {
     const mcpRelayEndpoint = `${this._wsHost}${this._extensionPath}`;
     // Need to specify "key" in the manifest.json to make the id stable when loading from file.
-    const url = new URL('chrome-extension://mmlmfjhmonkocbjadbfplnigmagldckm/connect.html');
+    const url = new URL('chrome-extension://bfdoafdagnmdcgohpbjobdppiokejjdi/connect.html');
     url.searchParams.set('mcpRelayUrl', mcpRelayEndpoint);
     const client = {
       name: 'Playwright Agent',
