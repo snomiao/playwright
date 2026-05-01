@@ -29,6 +29,16 @@
 import { spawn } from 'child_process';
 import http from 'http';
 import os from 'os';
+import path from 'path';
+
+function defaultChromeUserDataDir(): string {
+  const home = os.homedir();
+  if (process.platform === 'darwin')
+    return path.join(home, 'Library', 'Application Support', 'Google', 'Chrome');
+  if (process.platform === 'win32')
+    return path.join(home, 'AppData', 'Local', 'Google', 'Chrome', 'User Data');
+  return path.join(home, '.config', 'google-chrome');
+}
 
 import debug from 'debug';
 import ws, { WebSocketServer as wsServer } from 'ws';
@@ -142,10 +152,15 @@ export class CDPRelayServer {
         throw new Error(`"${this._browserChannel}" executable not found. Make sure it is installed at a standard location.`);
     }
 
+    const profileDirectory = process.env.PLAYWRIGHT_MCP_PROFILE_DIRECTORY;
     const args: string[] = [];
-    const userDataDir = process.env.PWTEST_EXTENSION_USER_DATA_DIR;
+    const userDataDir = process.env.PWTEST_EXTENSION_USER_DATA_DIR
+        || process.env.PLAYWRIGHT_MCP_USER_DATA_DIR
+        || (profileDirectory ? defaultChromeUserDataDir() : undefined);
     if (userDataDir)
       args.push(`--user-data-dir=${userDataDir}`);
+    if (profileDirectory)
+      args.push(`--profile-directory=${profileDirectory}`);
     if (os.platform() === 'linux' && channel === 'chromium')
       args.push('--no-sandbox');
     args.push(href);
