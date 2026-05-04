@@ -18,7 +18,8 @@ import fs from 'fs';
 import path from 'path';
 
 // Also pinned via the "key" field in packages/extension/manifest.json.
-export const playwrightExtensionId = 'mmlmfjhmonkocbjadbfplnigmagldckm';
+// Can be overridden via PLAYWRIGHT_MCP_EXTENSION_ID env var for custom extension builds.
+export const playwrightExtensionId = process.env.PLAYWRIGHT_MCP_EXTENSION_ID || 'mmlmfjhmonkocbjadbfplnigmagldckm';
 
 export const playwrightExtensionInstallUrl = `https://chromewebstore.google.com/detail/playwright-mcp-bridge/${playwrightExtensionId}`;
 
