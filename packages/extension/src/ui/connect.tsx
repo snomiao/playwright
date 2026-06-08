@@ -59,9 +59,10 @@ const ConnectApp: React.FC = () => {
         return;
       }
 
+      let info = 'unknown';
       try {
         const client = JSON.parse(params.get('client') || '{}');
-        const info = `${client.name || 'unknown'}`;
+        info = `${client.name || 'unknown'}`;
         setClientInfo(info);
         setStatus({
           type: 'connecting',
@@ -97,7 +98,8 @@ const ConnectApp: React.FC = () => {
       const expectedToken = getOrCreateAuthToken();
       const token = params.get('token');
       if (token === expectedToken) {
-        await handleConnectToTab();
+        // Pass the freshly parsed name — setClientInfo above hasn't applied yet.
+        await handleConnectToTab(undefined, info);
         return;
       }
       if (token) {
@@ -128,28 +130,33 @@ const ConnectApp: React.FC = () => {
       setStatus({ type: 'error', message: 'Failed to load tabs: ' + response.error });
   }, []);
 
-  const handleConnectToTab = useCallback(async (tab?: chrome.tabs.Tab) => {
+  // `clientName` defaults to the `clientInfo` state (set for the user-click path,
+  // which renders before the click), but the token-bypass path calls this within
+  // the same effect run — before setClientInfo has applied — so it passes the
+  // freshly parsed name explicitly. Otherwise the stale initial 'unknown' leaks
+  // through and names the tab group "unknown".
+  const handleConnectToTab = useCallback(async (tab?: chrome.tabs.Tab, clientName: string = clientInfo) => {
     setShowTabList(false);
 
     try {
       const response = await chrome.runtime.sendMessage({
         type: 'connectToTab',
         tab,
-        clientName: clientInfo,
+        clientName,
       });
 
       if (response?.success) {
-        setStatus({ type: 'connected', message: `"${clientInfo}" connected.` });
+        setStatus({ type: 'connected', message: `"${clientName}" connected.` });
       } else {
         setStatus({
           type: 'error',
-          message: response?.error || `"${clientInfo}" failed to connect.`
+          message: response?.error || `"${clientName}" failed to connect.`
         });
       }
     } catch (e) {
       setStatus({
         type: 'error',
-        message: `"${clientInfo}" failed to connect: ${e}`
+        message: `"${clientName}" failed to connect: ${e}`
       });
     }
   }, [clientInfo]);

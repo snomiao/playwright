@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { test, expect, connectAndNavigate, startWithExtensionFlag } from './extension-fixtures';
+import { test, expect, connectAndNavigate, startWithExtensionFlag, extensionId } from './extension-fixtures';
 
 test.skip(({ protocolVersion }) => protocolVersion === 1, 'Concurrent clients require protocol v2');
 
@@ -52,6 +52,53 @@ test(`two clients share one Chrome profile without eviction`, async ({ browserWi
     const groups = await chrome.tabGroups.query({});
     return groups.map(g => g.title || '');
   });
+  const ours = titles.filter(t => t.startsWith('🎭')).sort();
+  expect(ours).toEqual(['🎭 agent-A', '🎭 agent-B']);
+});
+
+// The token-bypass path (no Allow click — what rech actually uses) must also
+// forward the client name. Regression for the connect.tsx state-timing bug where
+// it auto-connected with the stale initial 'unknown' before setClientInfo applied,
+// naming every group "🎭 unknown".
+test(`token-bypass: concurrent clients get distinct named groups`, async ({ browserWithExtension, startClient, server }) => {
+  server.setContent('/a.html', '<title>A</title><body>Token A page</body>', 'text/html');
+  server.setContent('/b.html', '<title>B</title><body>Token B page</body>', 'text/html');
+
+  const browserContext = await browserWithExtension.launch();
+
+  // Read the extension's auth token — the value rech passes for token-bypass.
+  const tokenPage = await browserContext.newPage();
+  await tokenPage.goto(`chrome-extension://${extensionId}/status.html`);
+  const tokenText = await tokenPage.locator('.auth-token-code').textContent();
+  const [, token] = tokenText?.split('=') || [];
+  await tokenPage.close();
+
+  const startBypass = async (name: string) => {
+    const { client } = await startClient({
+      args: ['--extension'],
+      env: {
+        PLAYWRIGHT_MCP_EXTENSION_TOKEN: token,
+        PLAYWRIGHT_MCP_CLIENT_NAME: name,
+        PWTEST_EXTENSION_USER_DATA_DIR: browserWithExtension.userDataDir,
+      },
+    });
+    return client;
+  };
+
+  const clientA = await startBypass('agent-A');
+  expect(await clientA.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/a.html' } }))
+      .toHaveResponse({ snapshot: expect.stringContaining('Token A page') });
+
+  const clientB = await startBypass('agent-B');
+  expect(await clientB.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/b.html' } }))
+      .toHaveResponse({ snapshot: expect.stringContaining('Token B page') });
+
+  // A still alive (no eviction) ...
+  expect((await clientA.callTool({ name: 'browser_snapshot', arguments: {} })).isError).toBeFalsy();
+
+  // ... and the groups are named by client, not "unknown".
+  const [sw] = browserContext.serviceWorkers();
+  const titles: string[] = await sw.evaluate(async () => (await chrome.tabGroups.query({})).map(g => g.title || ''));
   const ours = titles.filter(t => t.startsWith('🎭')).sort();
   expect(ours).toEqual(['🎭 agent-A', '🎭 agent-B']);
 });
