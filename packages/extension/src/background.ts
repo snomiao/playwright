@@ -39,8 +39,11 @@ type PageMessage = {
 };
 
 class PlaywrightExtension {
-  private _activeGroup: ConnectedTabGroup | undefined;
-  private _activeClientName: string | undefined;
+  // Multiple concurrent clients can share one Chrome profile — each connection gets
+  // its own ConnectedTabGroup (its own Chrome tab group), so a new client no longer
+  // evicts existing ones. Tabs stay isolated by per-group _groupId / attachedTabs.
+  private _activeGroups = new Set<ConnectedTabGroup>();
+  private _clientNames = new Map<ConnectedTabGroup, string | undefined>();
   private _pendingConnections = new PendingConnections();
   // Service worker restarts lose all connection state, so any existing
   // Playwright groups are stale. Connections wait on this before reconciling.
@@ -78,8 +81,8 @@ class PlaywrightExtension {
       }
       case 'getConnectionStatus':
         sendResponse({
-          connectedTabIds: this._activeGroup?.connectedTabIds() ?? [],
-          clientName: this._activeClientName,
+          connectedTabIds: [...this._activeGroups].flatMap(group => group.connectedTabIds()),
+          clientName: [...this._clientNames.values()].filter(Boolean).join(', ') || undefined,
         });
         return false;
       case 'disconnect':
@@ -100,7 +103,8 @@ class PlaywrightExtension {
   private async _connectTab(selectorTabId: number, tab: chrome.tabs.Tab & { id: number }, clientName: string | undefined): Promise<void> {
     try {
       await this._cleanupPromise;
-      this._disconnect('Another connection is requested');
+      // Do NOT evict existing connections: multiple clients coexist, each in its own
+      // tab group. (Previously: this._disconnect('Another connection is requested').)
 
       const connection = await this._pendingConnections.take(selectorTabId);
       if (!connection)
@@ -108,13 +112,11 @@ class PlaywrightExtension {
 
       const group = new ConnectedTabGroup(connection, tab);
       group.onclose = () => {
-        if (this._activeGroup === group) {
-          this._activeGroup = undefined;
-          this._activeClientName = undefined;
-        }
+        this._activeGroups.delete(group);
+        this._clientNames.delete(group);
       };
-      this._activeGroup = group;
-      this._activeClientName = clientName;
+      this._activeGroups.add(group);
+      this._clientNames.set(group, clientName);
 
       await Promise.all([
         chrome.tabs.update(tab.id, { active: true }),
@@ -141,12 +143,13 @@ class PlaywrightExtension {
     });
   }
 
-  // Closes the active group's connection if any. ConnectedTabGroup's onclose
-  // handles state cleanup (connectedTabIds, badges, reconcile).
+  // Closes every active group's connection. ConnectedTabGroup's onclose handles
+  // per-group state cleanup (connectedTabIds, badges, reconcile).
   private _disconnect(reason: string) {
-    this._activeGroup?.close(reason);
-    this._activeGroup = undefined;
-    this._activeClientName = undefined;
+    for (const group of this._activeGroups)
+      group.close(reason);
+    this._activeGroups.clear();
+    this._clientNames.clear();
   }
 }
 
