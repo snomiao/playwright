@@ -18,6 +18,11 @@ import { RelayConnection, debugLog } from './relayConnection';
 
 const PLAYWRIGHT_GROUP_TITLE = 'Playwright';
 const PLAYWRIGHT_GROUP_COLOR = 'green';
+// Marker prefix on every Playwright-owned tab group title. The visible part after
+// it is the client/agent name (or first page's domain), so concurrent sessions are
+// distinguishable; the marker lets stale-group cleanup find ours without matching
+// the user's own groups.
+const PLAYWRIGHT_GROUP_MARK = '🎭';
 const NON_DEBUGGABLE_SCHEMES = ['chrome:', 'edge:', 'devtools:'];
 const CONNECTED_BADGE = { text: '✓', color: '#4CAF50', title: 'Connected to Playwright client' };
 
@@ -25,10 +30,30 @@ export function isNonDebuggableUrl(url: string | undefined): boolean {
   return !!url && NON_DEBUGGABLE_SCHEMES.some(s => url.startsWith(s));
 }
 
-// Ungroups any Playwright-titled groups left behind by a prior service worker.
+// Hostname (without leading www.) of an http(s) URL, else undefined — used as the
+// tab-group name when no client/agent name is supplied.
+function urlDomain(url: string | undefined): string | undefined {
+  if (!url)
+    return undefined;
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:')
+      return undefined;
+    return u.hostname.replace(/^www\./, '');
+  } catch {
+    return undefined;
+  }
+}
+
+// Builds a marked group title: "🎭 <client name | domain | Playwright>".
+function groupTitle(clientName: string | undefined, seedUrl: string | undefined): string {
+  return `${PLAYWRIGHT_GROUP_MARK} ${clientName || urlDomain(seedUrl) || PLAYWRIGHT_GROUP_TITLE}`;
+}
+
+// Ungroups any Playwright-marked groups left behind by a prior service worker.
 export async function cleanupStalePlaywrightGroups(): Promise<void> {
   try {
-    const groups = await chrome.tabGroups.query({ title: PLAYWRIGHT_GROUP_TITLE });
+    const groups = (await chrome.tabGroups.query({})).filter(g => g.title?.startsWith(PLAYWRIGHT_GROUP_MARK));
     const tabsPerGroup = await Promise.all(groups.map(g => chrome.tabs.query({ groupId: g.id })));
     const tabIds = tabsPerGroup.flat().map(t => t.id).filter((id): id is number => id !== undefined);
     if (tabIds.length)
@@ -52,11 +77,13 @@ export class ConnectedTabGroup {
   private _groupTabIds: Set<number> = new Set();
   private _onTabUpdatedListener: (tabId: number, changeInfo: chrome.tabs.TabChangeInfo, tab: chrome.tabs.Tab) => void;
   private _onTabRemovedListener: (tabId: number) => void;
+  private _groupTitle: string;
 
   onclose?: () => void;
 
-  constructor(connection: RelayConnection, selectedTab: chrome.tabs.Tab) {
+  constructor(connection: RelayConnection, selectedTab: chrome.tabs.Tab, clientName?: string) {
     this._connection = connection;
+    this._groupTitle = groupTitle(clientName, selectedTab.url);
     this._connection.onclose = () => this._onConnectionClose();
     this._connection.ontabattached = (tabId: number) => this._onTabAttached(tabId);
     this._connection.ontabdetached = (tabId: number) => this._onTabDetached(tabId);
@@ -164,7 +191,7 @@ export class ConnectedTabGroup {
       await this._retryOnDrag(async () => {
         if (this._groupId === null) {
           this._groupId = await chrome.tabs.group({ tabIds: [tabId] });
-          await chrome.tabGroups.update(this._groupId, { color: PLAYWRIGHT_GROUP_COLOR, title: PLAYWRIGHT_GROUP_TITLE });
+          await chrome.tabGroups.update(this._groupId, { color: PLAYWRIGHT_GROUP_COLOR, title: this._groupTitle });
         } else {
           await chrome.tabs.group({ groupId: this._groupId, tabIds: [tabId] });
         }

@@ -19,7 +19,8 @@ import { test, expect, connectAndNavigate, startWithExtensionFlag } from './exte
 test.skip(({ protocolVersion }) => protocolVersion === 1, 'Concurrent clients require protocol v2');
 
 // Two MCP clients connecting to the SAME Chrome profile must coexist: connecting
-// the second client must NOT evict the first. Each client keeps its own tab group.
+// the second client must NOT evict the first. Each client keeps its own tab group,
+// titled by its PLAYWRIGHT_MCP_CLIENT_NAME so the groups are distinguishable.
 test(`two clients share one Chrome profile without eviction`, async ({ browserWithExtension, startClient, server }) => {
   server.setContent('/a.html', '<title>ClientA</title><body>Client A page</body>', 'text/html');
   server.setContent('/b.html', '<title>ClientB</title><body>Client B page</body>', 'text/html');
@@ -27,12 +28,12 @@ test(`two clients share one Chrome profile without eviction`, async ({ browserWi
   const browserContext = await browserWithExtension.launch();
 
   // Client A connects to the profile and navigates to its own page.
-  const clientA = await startWithExtensionFlag(browserWithExtension, startClient);
+  const clientA = await startWithExtensionFlag(browserWithExtension, startClient, { PLAYWRIGHT_MCP_CLIENT_NAME: 'agent-A' });
   await connectAndNavigate(browserContext, clientA, server.PREFIX + '/a.html');
 
   // Client B connects to the SAME profile. Before the fix this evicted A
   // (single _activeGroup + _disconnect('Another connection is requested')).
-  const clientB = await startWithExtensionFlag(browserWithExtension, startClient);
+  const clientB = await startWithExtensionFlag(browserWithExtension, startClient, { PLAYWRIGHT_MCP_CLIENT_NAME: 'agent-B' });
   await connectAndNavigate(browserContext, clientB, server.PREFIX + '/b.html');
 
   // Client A must still be alive and still see its OWN page — not evicted.
@@ -44,4 +45,13 @@ test(`two clients share one Chrome profile without eviction`, async ({ browserWi
   const bSnapshot = await clientB.callTool({ name: 'browser_snapshot', arguments: {} });
   expect(bSnapshot.isError).toBeFalsy();
   expect(bSnapshot).toHaveResponse({ inlineSnapshot: expect.stringContaining('Client B page') });
+
+  // Each client gets its own Chrome tab group, named after its client name.
+  const [sw] = browserContext.serviceWorkers();
+  const titles: string[] = await sw.evaluate(async () => {
+    const groups = await chrome.tabGroups.query({});
+    return groups.map(g => g.title || '');
+  });
+  const ours = titles.filter(t => t.startsWith('🎭')).sort();
+  expect(ours).toEqual(['🎭 agent-A', '🎭 agent-B']);
 });

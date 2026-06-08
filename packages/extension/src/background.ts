@@ -110,7 +110,7 @@ class PlaywrightExtension {
       if (!connection)
         throw new Error('Pending client connection closed');
 
-      const group = new ConnectedTabGroup(connection, tab);
+      const group = new ConnectedTabGroup(connection, tab, clientName);
       group.onclose = () => {
         this._activeGroups.delete(group);
         this._clientNames.delete(group);

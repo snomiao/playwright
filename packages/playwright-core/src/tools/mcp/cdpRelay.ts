@@ -130,7 +130,10 @@ export class CDPRelayServer {
     const url = new URL(`chrome-extension://${playwrightExtensionId}/connect.html`);
     url.searchParams.set('mcpRelayUrl', mcpRelayEndpoint);
     const client = {
-      name: clientName,
+      // PLAYWRIGHT_MCP_CLIENT_NAME (set by the rechrome daemon to a short identity
+      // label) names the Chrome tab group so concurrent same-profile sessions are
+      // distinguishable; falls back to the MCP client name.
+      name: process.env.PLAYWRIGHT_MCP_CLIENT_NAME || clientName,
       // Not used anymore.
       version: undefined,
     };
