@@ -16,13 +16,11 @@
 
 import { RelayConnection, debugLog } from './relayConnection';
 
-const PLAYWRIGHT_GROUP_TITLE = 'Playwright';
+const PLAYWRIGHT_GROUP_TITLE = 'pw';
 const PLAYWRIGHT_GROUP_COLOR = 'green';
-// Marker prefix on every Playwright-owned tab group title. The visible part after
-// it is the client/agent name (or first page's domain), so concurrent sessions are
-// distinguishable; the marker lets stale-group cleanup find ours without matching
-// the user's own groups.
-const PLAYWRIGHT_GROUP_MARK = '🎭';
+// Tab group titles are space-constrained; keep them to 7 chars, no marker prefix.
+// Playwright groups are identified by their green color for stale-group cleanup.
+const MAX_GROUP_TITLE_LEN = 7;
 const NON_DEBUGGABLE_SCHEMES = ['chrome:', 'edge:', 'devtools:'];
 const CONNECTED_BADGE = { text: '✓', color: '#4CAF50', title: 'Connected to Playwright client' };
 
@@ -30,8 +28,8 @@ export function isNonDebuggableUrl(url: string | undefined): boolean {
   return !!url && NON_DEBUGGABLE_SCHEMES.some(s => url.startsWith(s));
 }
 
-// Hostname (without leading www.) of an http(s) URL, else undefined — used as the
-// tab-group name when no client/agent name is supplied.
+// First DNS label of an http(s) URL (e.g. "github.com" -> "github"), else undefined
+// — used as the tab-group name when no client/agent name is supplied.
 function urlDomain(url: string | undefined): string | undefined {
   if (!url)
     return undefined;
@@ -39,21 +37,23 @@ function urlDomain(url: string | undefined): string | undefined {
     const u = new URL(url);
     if (u.protocol !== 'http:' && u.protocol !== 'https:')
       return undefined;
-    return u.hostname.replace(/^www\./, '');
+    return u.hostname.replace(/^www\./, '').split('.')[0];
   } catch {
     return undefined;
   }
 }
 
-// Builds a marked group title: "🎭 <client name | domain | Playwright>".
+// Builds a short (<=7 char) group title: client name, else first page's domain,
+// else "pw". No marker — groups are identified by color for cleanup.
 function groupTitle(clientName: string | undefined, seedUrl: string | undefined): string {
-  return `${PLAYWRIGHT_GROUP_MARK} ${clientName || urlDomain(seedUrl) || PLAYWRIGHT_GROUP_TITLE}`;
+  return (clientName || urlDomain(seedUrl) || PLAYWRIGHT_GROUP_TITLE).slice(0, MAX_GROUP_TITLE_LEN);
 }
 
-// Ungroups any Playwright-marked groups left behind by a prior service worker.
+// Ungroups Playwright groups (identified by color) left behind by a prior service
+// worker. Note: a user's own green tab groups would also be ungrouped on SW restart.
 export async function cleanupStalePlaywrightGroups(): Promise<void> {
   try {
-    const groups = (await chrome.tabGroups.query({})).filter(g => g.title?.startsWith(PLAYWRIGHT_GROUP_MARK));
+    const groups = await chrome.tabGroups.query({ color: PLAYWRIGHT_GROUP_COLOR });
     const tabsPerGroup = await Promise.all(groups.map(g => chrome.tabs.query({ groupId: g.id })));
     const tabIds = tabsPerGroup.flat().map(t => t.id).filter((id): id is number => id !== undefined);
     if (tabIds.length)

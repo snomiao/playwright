@@ -48,12 +48,9 @@ test(`two clients share one Chrome profile without eviction`, async ({ browserWi
 
   // Each client gets its own Chrome tab group, named after its client name.
   const [sw] = browserContext.serviceWorkers();
-  const titles: string[] = await sw.evaluate(async () => {
-    const groups = await chrome.tabGroups.query({});
-    return groups.map(g => g.title || '');
-  });
-  const ours = titles.filter(t => t.startsWith('🎭')).sort();
-  expect(ours).toEqual(['🎭 agent-A', '🎭 agent-B']);
+  const titles: string[] = await sw.evaluate(async () =>
+    (await chrome.tabGroups.query({ color: 'green' })).map(g => g.title || ''));
+  expect(titles.sort()).toEqual(['agent-A', 'agent-B']);
 });
 
 // The token-bypass path (no Allow click — what rech actually uses) must also
@@ -98,7 +95,7 @@ test(`token-bypass: concurrent clients get distinct named groups`, async ({ brow
 
   // ... and the groups are named by client, not "unknown".
   const [sw] = browserContext.serviceWorkers();
-  const titles: string[] = await sw.evaluate(async () => (await chrome.tabGroups.query({})).map(g => g.title || ''));
-  const ours = titles.filter(t => t.startsWith('🎭')).sort();
-  expect(ours).toEqual(['🎭 agent-A', '🎭 agent-B']);
+  const titles: string[] = await sw.evaluate(async () =>
+    (await chrome.tabGroups.query({ color: 'green' })).map(g => g.title || ''));
+  expect(titles.sort()).toEqual(['agent-A', 'agent-B']);
 });
