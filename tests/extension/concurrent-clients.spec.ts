@@ -53,6 +53,52 @@ test(`two clients share one Chrome profile without eviction`, async ({ browserWi
   expect(titles.sort()).toEqual(['agent-A', 'agent-B']);
 });
 
+// A second same-profile client's connect.html (which Chrome drops into the
+// currently-active group) must NOT be absorbed by the first client's group.
+// KNOWN ISSUE (deferred, see TODO.md): the orphaned connect page is cosmetic and
+// harmless (closing it does not drop the connection), but ejecting it cleanly
+// collides with the racy path where a connect page legitimately seeds the owner's
+// group. Marked fixme until a non-racy fix lands.
+test.fixme(`token-bypass: connect.html does not leak into another client's group`, async ({ browserWithExtension, startClient, server }) => {
+  server.setContent('/a.html', '<title>A</title><body>A page</body>', 'text/html');
+  server.setContent('/b.html', '<title>B</title><body>B page</body>', 'text/html');
+
+  const browserContext = await browserWithExtension.launch();
+
+  const tokenPage = await browserContext.newPage();
+  await tokenPage.goto(`chrome-extension://${extensionId}/status.html`);
+  const [, token] = (await tokenPage.locator('.auth-token-code').textContent())?.split('=') || [];
+  await tokenPage.close();
+
+  const startBypass = async (name: string) => {
+    const { client } = await startClient({
+      args: ['--extension'],
+      env: {
+        PLAYWRIGHT_MCP_EXTENSION_TOKEN: token,
+        PLAYWRIGHT_MCP_CLIENT_NAME: name,
+        PWTEST_EXTENSION_USER_DATA_DIR: browserWithExtension.userDataDir,
+      },
+    });
+    return client;
+  };
+
+  const clientA = await startBypass('A');
+  await clientA.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/a.html' } });
+  const clientB = await startBypass('B');
+  await clientB.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/b.html' } });
+
+  // No Playwright (green) group may contain a connect.html tab.
+  const [sw] = browserContext.serviceWorkers();
+  const groupedUrls: string[] = await sw.evaluate(async () => {
+    const urls: string[] = [];
+    for (const g of await chrome.tabGroups.query({ color: 'green' }))
+      for (const t of await chrome.tabs.query({ groupId: g.id }))
+        urls.push(t.url || '');
+    return urls;
+  });
+  expect(groupedUrls.filter(u => u.includes('/connect.html'))).toEqual([]);
+});
+
 // The token-bypass path (no Allow click — what rech actually uses) must also
 // forward the client name. Regression for the connect.tsx state-timing bug where
 // it auto-connected with the stale initial 'unknown' before setClientInfo applied,
