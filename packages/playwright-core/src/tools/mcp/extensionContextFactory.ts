@@ -34,7 +34,11 @@ export async function createExtensionBrowser(channel: string, executablePath: st
   }
 
   const httpServer = createHttpServer();
-  await startHttpServer(httpServer, {});
+  // Bind IPv4 loopback explicitly. The default host ("localhost") resolves to IPv6 `::1` on
+  // Windows, so the relay would bind `::1`-only and advertise `ws://[::1]:<port>` — which the
+  // extension's WebSocket times out on, and `localhost` is rejected by its loopback allowlist
+  // (127.0.0.1 / [::1] only). 127.0.0.1 satisfies the allowlist and connects reliably everywhere.
+  await startHttpServer(httpServer, { host: '127.0.0.1' });
   const relay = new CDPRelayServer(httpServer, channel, executablePath);
   debugLogger(`CDP relay server started, extension endpoint: ${relay.extensionEndpoint()}.`);
 
