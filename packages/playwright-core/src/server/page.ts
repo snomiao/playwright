@@ -616,7 +616,11 @@ export class Page extends SdkObject<PageEventMap> {
     const contextOptions = this.browserContext._options;
     return {
       media: this._emulatedMedia.media || 'no-override',
-      colorScheme: this._emulatedMedia.colorScheme !== undefined ? this._emulatedMedia.colorScheme : contextOptions.colorScheme ?? 'light',
+      // rechrome: default to the OS color scheme ('no-override') instead of forcing 'light'.
+      // This drives the user's real Chrome as a native, user-facing app, so an unspecified
+      // scheme must follow the system/browser theme rather than reset it to light. Matches
+      // launchApp.ts, which already defaults persistent contexts to 'no-override'.
+      colorScheme: this._emulatedMedia.colorScheme !== undefined ? this._emulatedMedia.colorScheme : contextOptions.colorScheme ?? 'no-override',
       reducedMotion: this._emulatedMedia.reducedMotion !== undefined ? this._emulatedMedia.reducedMotion : contextOptions.reducedMotion ?? 'no-preference',
       forcedColors: this._emulatedMedia.forcedColors !== undefined ? this._emulatedMedia.forcedColors : contextOptions.forcedColors ?? 'none',
       contrast: this._emulatedMedia.contrast !== undefined ? this._emulatedMedia.contrast : contextOptions.contrast ?? 'no-preference',
