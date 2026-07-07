@@ -31,6 +31,12 @@ import type { Disposable } from '@isomorphic/disposable';
 import type { Context, ContextConfig } from './context';
 import type * as playwright from '../../..';
 
+export type NavigateOptions = {
+  // 'none' is an alias for 'commit' (resolve as soon as the navigation commits).
+  waitUntil?: 'none' | 'commit' | 'domcontentloaded' | 'load' | 'networkidle';
+  timeout?: number;
+};
+
 const TabEvents = {
   modalState: 'modalState'
 };
@@ -303,7 +309,7 @@ export class Tab extends EventEmitter<TabEventsInterface> {
     await this.page.waitForLoadState(state, options).catch(e => debug('pw:tools:error')(e));
   }
 
-  async checkUrlAndNavigate(url: string): Promise<string> {
+  async checkUrlAndNavigate(url: string, options?: NavigateOptions): Promise<string> {
     try {
       new URL(url);
     } catch (e) {
@@ -313,18 +319,26 @@ export class Tab extends EventEmitter<TabEventsInterface> {
         url = 'https://' + url;
     }
     this.context.checkUrlAllowed(url);
-    await this.navigate(url);
+    await this.navigate(url, options);
     return url;
   }
 
-  async navigate(url: string) {
+  async navigate(url: string, options?: NavigateOptions) {
     await this._initializedPromise;
 
     this._clearCollectedArtifacts();
 
+    // Bounded, caller-controllable wait. Default stays `domcontentloaded` (NOT
+    // networkidle) so a page whose network never idles (SSE/websocket/poll) opens
+    // promptly. `none` == `commit`: resolve as soon as navigation commits and skip
+    // the post-load wait, for pages that never fire `load`.
+    const requested = options?.waitUntil ?? 'domcontentloaded';
+    const waitUntil = requested === 'none' ? 'commit' : requested;
+    const timeoutOptions = options?.timeout !== undefined ? { timeout: options.timeout } : this.navigationTimeoutOptions;
+
     const { promise: downloadEvent, abort: abortDownloadEvent } = eventWaiter<playwright.Download>(this.page, 'download', 3000);
     try {
-      await this.page.goto(url, { waitUntil: 'domcontentloaded', ...this.navigationTimeoutOptions });
+      await this.page.goto(url, { waitUntil, ...timeoutOptions });
       abortDownloadEvent();
     } catch (_e: unknown) {
       const e = _e as Error;
@@ -341,6 +355,11 @@ export class Tab extends EventEmitter<TabEventsInterface> {
       await new Promise(resolve => setTimeout(resolve, 500));
       return;
     }
+
+    // For the fast/no-wait modes we deliberately do NOT block on `load` — the caller
+    // asked to return as soon as the navigation committed.
+    if (requested === 'none' || requested === 'commit')
+      return;
 
     // Cap load event to 5 seconds, the page is operational at this point.
     await this.waitForLoadState('load', { timeout: 5000 });

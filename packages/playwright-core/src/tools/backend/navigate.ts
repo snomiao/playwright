@@ -26,13 +26,15 @@ const navigate = defineTool({
     description: 'Navigate to a URL',
     inputSchema: z.object({
       url: z.string().describe('The URL to navigate to'),
+      waitUntil: z.enum(['none', 'commit', 'domcontentloaded', 'load', 'networkidle']).optional().describe('When navigation is considered done (default domcontentloaded). Use none/commit for pages whose network never goes idle.'),
+      timeout: z.number().optional().describe('Navigation timeout in milliseconds.'),
     }),
     type: 'action',
   },
 
   handle: async (context, params, response) => {
     const tab = await context.ensureTab();
-    const url = await tab.checkUrlAndNavigate(params.url);
+    const url = await tab.checkUrlAndNavigate(params.url, { waitUntil: params.waitUntil, timeout: params.timeout });
 
     response.setIncludeSnapshot();
     response.addCode(`await page.goto('${url}');`);

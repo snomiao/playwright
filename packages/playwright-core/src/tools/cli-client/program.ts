@@ -150,7 +150,14 @@ export async function program(options?: { embedderVersion?: string}) {
       const { pid } = await startSession(sessionName, registry, clientInfo, args, 'open');
       const newEntry = await registry.loadEntry(clientInfo, sessionName);
       const params = args._.slice(1);
-      const toolText = await runInSessionOrStop(newEntry, clientInfo, { _: ['goto', ...(params.length ? params : ['about:blank'])] }, output);
+      // Forward `open`'s navigation options (--wait/--timeout) into the implicit goto
+      // so `open <url> --wait none` opens a never-idle page promptly.
+      const gotoArgs: MinimistArgs = { _: ['goto', ...(params.length ? params : ['about:blank'])] };
+      if (args.wait !== undefined)
+        gotoArgs.wait = args.wait;
+      if (args.timeout !== undefined)
+        gotoArgs.timeout = args.timeout;
+      const toolText = await runInSessionOrStop(newEntry, clientInfo, gotoArgs, output);
       output.open(sessionName, pid, toolText);
       return;
     }

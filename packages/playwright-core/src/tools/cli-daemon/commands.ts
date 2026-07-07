@@ -33,6 +33,17 @@ const numberArg = z.preprocess((val, ctx) => {
   return number;
 }, z.number());
 
+// Bounded navigation-wait control for `open`/`goto`. Default (omitted) stays
+// `domcontentloaded` in tab.navigate — NOT networkidle — so a page whose network
+// never goes idle (SSE/websocket/poll dashboards) still opens promptly. `none` is
+// an alias for `commit` (resolve as soon as navigation commits, don't wait for the
+// DOM). `timeout` bounds the wait so a slow/streaming page can never hang forever.
+const waitUntilArg = z.enum(['none', 'commit', 'domcontentloaded', 'load', 'networkidle']);
+const navigationOptions = {
+  wait: waitUntilArg.optional().describe('When navigation is considered done: none|commit|domcontentloaded|load|networkidle (default domcontentloaded).'),
+  timeout: numberArg.optional().describe('Navigation timeout in milliseconds.'),
+};
+
 // Navigation commands
 
 const open = declareCommand({
@@ -48,6 +59,7 @@ const open = declareCommand({
     headed: z.boolean().optional().describe('Run browser in headed mode'),
     persistent: z.boolean().optional().describe('Use persistent browser profile'),
     profile: z.string().optional().describe('Path to a persistent user data directory.'),
+    ...navigationOptions,
   }),
   toolName: '',
   toolParams: () => ({}),
@@ -96,8 +108,11 @@ const goto = declareCommand({
   args: z.object({
     url: z.string().describe('The URL to navigate to'),
   }),
+  options: z.object({
+    ...navigationOptions,
+  }),
   toolName: 'browser_navigate',
-  toolParams: ({ url }) => ({ url }),
+  toolParams: ({ url, wait, timeout }) => ({ url, waitUntil: wait, timeout }),
 });
 
 const goBack = declareCommand({

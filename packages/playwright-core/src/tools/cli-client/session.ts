@@ -149,16 +149,20 @@ export class Session {
     });
 
     let signalled = false;
-    const sigintHandler = () => {
+    // A termination signal to THIS client while the daemon is still starting up
+    // (e.g. the server-side timeout kill, or a user Ctrl-C on a slow `open`) must
+    // NOT cascade to the detached browser daemon. Killing the daemon here is what
+    // made a slow/timed-out `open` leave the session "not open" for every later
+    // command. Detach and exit the client instead; the daemon keeps running so a
+    // retry / follow-up command still reaches the browser, and a genuinely dead
+    // session is reaped by `list`/replaced on the next `open`.
+    const onSignal = () => {
       signalled = true;
-      child.kill('SIGINT');
+      child.unref();
+      process.exit(0);
     };
-    const sigtermHandler = () => {
-      signalled = true;
-      child.kill('SIGTERM');
-    };
-    process.on('SIGINT', sigintHandler);
-    process.on('SIGTERM', sigtermHandler);
+    process.on('SIGINT', onSignal);
+    process.on('SIGTERM', onSignal);
 
     let outLog = '';
     const rejectWithPid = (reject: (e: Error) => void, message: string) =>
@@ -187,8 +191,8 @@ export class Session {
       });
     });
 
-    process.off('SIGINT', sigintHandler);
-    process.off('SIGTERM', sigtermHandler);
+    process.off('SIGINT', onSignal);
+    process.off('SIGTERM', onSignal);
     child.stdout!.destroy();
     child.unref();
 

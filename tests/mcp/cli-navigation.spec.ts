@@ -52,3 +52,38 @@ test('run-code', async ({ cli, server }) => {
   const { output } = await cli('run-code', '() => page.title()');
   expect(output).toContain('"Title"');
 });
+
+// A page whose network never goes idle (SSE / websocket / poll dashboards). The
+// default navigation wait is `domcontentloaded`, NOT `networkidle`, so `open`/`goto`
+// must return promptly and keep the session usable.
+function neverIdle(server: any) {
+  server.setRoute('/hang', () => {}); // never responds -> network never idles
+  server.setContent('/', `<title>Streaming</title><body>hi</body><script>fetch('/hang').catch(() => {})</script>`, 'text/html');
+}
+
+test('opens a never-idle page promptly and keeps the session usable', async ({ cli, server }) => {
+  neverIdle(server);
+  const { output } = await cli('open', server.PREFIX);
+  expect(output).toContain('- Page Title: Streaming');
+  // A slow/streaming navigation must not tear the session down.
+  const after = await cli('run-code', '() => page.title()');
+  expect(after.output).toContain('"Streaming"');
+});
+
+test('open --wait none returns without waiting for the page to settle', async ({ cli, server }) => {
+  neverIdle(server);
+  const { output } = await cli('open', '--wait', 'none', server.PREFIX);
+  expect(output).toContain('### Page');
+  expect(output).not.toContain('Timeout');
+});
+
+test('goto --wait networkidle --timeout fails fast without tearing down the session', async ({ cli, server }) => {
+  neverIdle(server);
+  await cli('open', server.PREFIX);
+  // networkidle can never be reached; a bounded --timeout must fail fast, not hang.
+  const { output } = await cli('goto', '--wait', 'networkidle', '--timeout', '1000', server.PREFIX);
+  expect(output).toContain('Timeout 1000ms exceeded');
+  // The tab must persist so follow-up commands still work.
+  const after = await cli('run-code', '() => page.title()');
+  expect(after.output).toContain('"Streaming"');
+});
