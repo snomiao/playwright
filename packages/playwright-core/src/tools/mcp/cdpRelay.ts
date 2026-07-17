@@ -60,6 +60,11 @@ import type { WebSocket, WebSocketServer } from 'ws';
 
 const debugLogger = debug('pw:mcp:relay');
 
+const extensionConnectionTimeout = () => {
+  const configured = Number(process.env.PWMCP_TEST_CONNECTION_TIMEOUT);
+  return Number.isFinite(configured) && configured > 0 ? configured : 30_000;
+};
+
 type CDPCommand = {
   id: number;
   sessionId?: string;
@@ -120,8 +125,15 @@ export class CDPRelayServer {
     debugLogger('Establishing extension connection');
     this._openConnectPageInBrowser(clientName);
     debugLogger('Waiting for incoming extension connection');
-    await this._extensionConnectionPromise;
-    await this._handler.ready();
+    const timeout = extensionConnectionTimeout();
+    await Promise.race([
+      (async () => {
+        await this._extensionConnectionPromise;
+        await this._handler.ready();
+      })(),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error(
+          `Extension connection timeout after ${timeout}ms. Reload the Playwright MCP Bridge extension and retry.`)), timeout)),
+    ]);
     debugLogger('Extension connection established');
   }
 
