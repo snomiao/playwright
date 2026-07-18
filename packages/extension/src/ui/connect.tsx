@@ -26,6 +26,21 @@ type Status =
   | { type: 'error'; versionMismatch: { extensionVersion: string; } };
 
 const SUPPORTED_PROTOCOL_VERSION = 2;
+const BACKGROUND_RESPONSE_TIMEOUT_MS = 10_000;
+
+async function sendMessageWithTimeout(message: unknown, simulateHang = false): Promise<any> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      simulateHang ? new Promise(() => {}) : chrome.runtime.sendMessage(message),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Extension service worker did not respond')), BACKGROUND_RESPONSE_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 const ConnectApp: React.FC = () => {
   const [tabs, setTabs] = useState<chrome.tabs.Tab[]>([]);
@@ -42,6 +57,8 @@ const ConnectApp: React.FC = () => {
     const runAsync = async () => {
       const params = new URLSearchParams(window.location.search);
       const relayUrl = params.get('mcpRelayUrl');
+      const recoveryAttempt = params.get('recoveryAttempt') === '1';
+      const hasAutomationToken = !!params.get('token');
 
       if (!relayUrl) {
         setError('Missing mcpRelayUrl parameter in URL.');
@@ -89,7 +106,22 @@ const ConnectApp: React.FC = () => {
       // The background decides per protocolVersion: v1 opens the relay WS
       // immediately (the daemon expects a prompt connection); v2 just records
       // the descriptor and defers the WS until the user clicks Allow.
-      const response = await chrome.runtime.sendMessage({ type: 'connectionRequested', mcpRelayUrl: relayUrl, protocolVersion: requestedVersion });
+      let response;
+      try {
+        response = await sendMessageWithTimeout(
+            { type: 'connectionRequested', mcpRelayUrl: relayUrl, protocolVersion: requestedVersion },
+            params.get('testHangOnce') === '1' && !recoveryAttempt);
+      } catch (error: any) {
+        // A wedged MV3 worker can leave sendMessage pending forever. The relay opens one
+        // fresh recovery page against the same endpoint after 12s. recoveryAttempt=1
+        // prevents a persistent failure from looping.
+        if (hasAutomationToken && !recoveryAttempt) {
+          setError('Extension service worker is not responding. Retrying once…');
+          return;
+        }
+        setError(`Extension service worker did not recover: ${error.message}`);
+        return;
+      }
       if (!response.success) {
         setError(response.error);
         return;
@@ -139,7 +171,7 @@ const ConnectApp: React.FC = () => {
     setShowTabList(false);
 
     try {
-      const response = await chrome.runtime.sendMessage({
+      const response = await sendMessageWithTimeout({
         type: 'connectToTab',
         tab,
         clientName,
@@ -153,13 +185,21 @@ const ConnectApp: React.FC = () => {
           message: response?.error || `"${clientName}" failed to connect.`
         });
       }
-    } catch (e) {
+    } catch (e: any) {
+      // connectionRequested can succeed while the worker later wedges in stale-group
+      // cleanup or relay setup. Apply the same bounded self-heal to this second phase.
+      const recoveryAttempt = new URLSearchParams(window.location.search).get('recoveryAttempt') === '1';
+      const hasAutomationToken = !!new URLSearchParams(window.location.search).get('token');
+      if (hasAutomationToken && !recoveryAttempt) {
+        setError('Extension service worker stopped during connection. Retrying once…');
+        return;
+      }
       setStatus({
         type: 'error',
         message: `"${clientName}" failed to connect: ${e}`
       });
     }
-  }, [clientInfo]);
+  }, [clientInfo, setError]);
 
   useEffect(() => {
     const listener = (message: any) => {

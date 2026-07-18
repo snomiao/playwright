@@ -102,7 +102,12 @@ class PlaywrightExtension {
 
   private async _connectTab(selectorTabId: number, tab: chrome.tabs.Tab & { id: number }, clientName: string | undefined): Promise<void> {
     try {
-      await this._cleanupPromise;
+      // Stale-group cleanup is best-effort. A Chrome tabGroups API call can remain pending
+      // after a daemon/restart storm; never let it block all future connection messages.
+      await Promise.race([
+        this._cleanupPromise,
+        new Promise<void>(resolve => setTimeout(resolve, 2_000)),
+      ]);
       // Do NOT evict existing connections: multiple clients coexist, each in its own
       // tab group. (Previously: this._disconnect('Another connection is requested').)
 

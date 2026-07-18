@@ -52,6 +52,7 @@ export class RelayConnection {
   private _hasEverAttached = false;
   private _eventListeners: Array<{ remove: () => void }> = [];
   private _closed = false;
+  private _keepAliveInterval: ReturnType<typeof setInterval>;
 
   onclose?: () => void;
   ontabattached?: (tabId: number) => void;
@@ -75,6 +76,12 @@ export class RelayConnection {
     this._installEventForwarders();
     this._ws.onmessage = this._onMessage.bind(this);
     this._ws.onclose = () => this._onClose();
+    // Chrome MV3 may suspend a service worker whose WebSocket has no traffic for 30s.
+    // Emit an ignored protocol event every 20s so the worker remains alive while a
+    // Playwright session is active. The relay intentionally ignores unknown events.
+    this._keepAliveInterval = setInterval(() => {
+      this._sendMessage({ method: 'extension.keepalive', params: [] });
+    }, 20_000);
   }
 
   // Signals the end of the initial-tab handshake — call after the initial
@@ -139,6 +146,7 @@ export class RelayConnection {
     if (this._closed)
       return;
     this._closed = true;
+    clearInterval(this._keepAliveInterval);
     for (const l of this._eventListeners)
       l.remove();
     this._eventListeners = [];

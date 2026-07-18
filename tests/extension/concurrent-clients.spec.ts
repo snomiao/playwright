@@ -145,3 +145,29 @@ test(`token-bypass: concurrent clients get distinct named groups`, async ({ brow
     (await chrome.tabGroups.query({ color: 'green' })).map(g => g.title || ''));
   expect(titles.sort()).toEqual(['agent-A', 'agent-B']);
 });
+
+test(`token-bypass: retries once after a non-responsive service-worker message`, async ({ browserWithExtension, startClient, server }) => {
+  test.setTimeout(60_000);
+  server.setContent('/updated.html', '<title>Updated</title><body>Updated extension page</body>', 'text/html');
+
+  const browserContext = await browserWithExtension.launch();
+  const tokenPage = await browserContext.newPage();
+  await tokenPage.goto(`chrome-extension://${extensionId}/status.html`);
+  const tokenText = await tokenPage.locator('.auth-token-code').textContent();
+  const [, token] = tokenText?.split('=') || [];
+  await tokenPage.close();
+
+  const { client } = await startClient({
+    args: ['--extension'],
+    env: {
+      PLAYWRIGHT_MCP_EXTENSION_TOKEN: token,
+      PLAYWRIGHT_MCP_CLIENT_NAME: 'self-heal',
+      PWTEST_EXTENSION_USER_DATA_DIR: browserWithExtension.userDataDir,
+      PWMCP_TEST_EXTENSION_HANG_ONCE: '1',
+    },
+  });
+  expect(await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/updated.html' } }))
+      .toHaveResponse({ snapshot: expect.stringContaining('Updated extension page') });
+
+  expect(browserContext.serviceWorkers().length).toBeGreaterThan(0);
+});

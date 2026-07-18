@@ -126,18 +126,34 @@ export class CDPRelayServer {
     this._openConnectPageInBrowser(clientName);
     debugLogger('Waiting for incoming extension connection');
     const timeout = extensionConnectionTimeout();
-    await Promise.race([
-      (async () => {
-        await this._extensionConnectionPromise;
-        await this._handler.ready();
-      })(),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error(
-          `Extension connection timeout after ${timeout}ms. Reload the Playwright MCP Bridge extension and retry.`)), timeout)),
-    ]);
+    let established = false;
+    // If the first connect page sees no response after 10s, open one fresh page against
+    // the same relay endpoint. All background operations are bounded, so this recovers a
+    // transient stuck message without restarting Chrome or the extension.
+    // recoveryAttempt=1 prevents another retry loop.
+    const recoveryTimer = process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN ? setTimeout(() => {
+      if (!established) {
+        debugLogger('Retrying extension connection after service worker recovery');
+        this._openConnectPageInBrowser(clientName, true);
+      }
+    }, 12_000) : undefined;
+    try {
+      await Promise.race([
+        (async () => {
+          await this._extensionConnectionPromise;
+          await this._handler.ready();
+        })(),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error(
+            `Extension connection timeout after ${timeout}ms. Automatic recovery retry failed; reload the Playwright MCP Bridge extension at chrome://extensions and retry.`)), timeout)),
+      ]);
+      established = true;
+    } finally {
+      clearTimeout(recoveryTimer);
+    }
     debugLogger('Extension connection established');
   }
 
-  private _openConnectPageInBrowser(clientName: string) {
+  private _openConnectPageInBrowser(clientName: string, recoveryAttempt = false) {
     const mcpRelayEndpoint = `${this._wsHost}${this._extensionPath}`;
     const url = new URL(`chrome-extension://${playwrightExtensionId}/connect.html`);
     url.searchParams.set('mcpRelayUrl', mcpRelayEndpoint);
@@ -151,6 +167,10 @@ export class CDPRelayServer {
     };
     url.searchParams.set('client', JSON.stringify(client));
     url.searchParams.set('protocolVersion', this._protocolVersion.toString());
+    if (recoveryAttempt)
+      url.searchParams.set('recoveryAttempt', '1');
+    if (!recoveryAttempt && process.env.PWMCP_TEST_EXTENSION_HANG_ONCE)
+      url.searchParams.set('testHangOnce', '1');
     const token = process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN;
     if (token)
       url.searchParams.set('token', token);
