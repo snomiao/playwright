@@ -174,6 +174,14 @@ export class CDPRelayServer {
     const token = process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN;
     if (token)
       url.searchParams.set('token', token);
+    // chrome.runtime.reload() revives a wedged service worker for extensions
+    // installed unpacked via the chrome://extensions GUI, but permanently kills
+    // ones loaded with --load-extension (Chrome only re-scans that flag at
+    // startup). Only authorize the connect page to self-reload outside
+    // command-line-load flows (managed profiles, test harness).
+    const commandLineLoaded = !!(process.env.PLAYWRIGHT_MCP_LOAD_EXTENSION || process.env.PWTEST_EXTENSION_USER_DATA_DIR);
+    if (token && (!commandLineLoaded || process.env.PWMCP_TEST_SELF_RELOAD === '1'))
+      url.searchParams.set('selfReload', '1');
     const href = url.toString();
 
     const channel = registry.isChromiumAlias(this._browserChannel) ? 'chromium' : this._browserChannel;

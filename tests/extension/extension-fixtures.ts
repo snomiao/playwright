@@ -28,7 +28,7 @@ import type { StartClient } from '../mcp/fixtures';
 
 export type BrowserWithExtension = {
   userDataDir: string;
-  launch: (mode?: 'disable-extension') => Promise<BrowserContext>;
+  launch: (mode?: 'disable-extension' | 'cdp-unpacked') => Promise<BrowserContext>;
 };
 
 export type CliResult = {
@@ -84,18 +84,29 @@ export const test = base.extend<TestFixtures, WorkerFixtures & ExtensionTestOpti
     await fs.mkdir(path.join(userDataDir, 'Default', 'Extensions', extensionId), { recursive: true });
     await use({
       userDataDir,
-      launch: async (mode?: 'disable-extension') => {
+      launch: async (mode?: 'disable-extension' | 'cdp-unpacked') => {
+        // 'cdp-unpacked' installs via CDP Extensions.loadUnpacked, which behaves
+        // like the chrome://extensions GUI install — unlike --load-extension, the
+        // extension survives chrome.runtime.reload().
         browserContext = await chromium.launchPersistentContext(userDataDir, {
           channel: mcpBrowser,
           // Opening the browser singleton only works in headed.
           headless: false,
           // Automation disables singleton browser process behavior, which is necessary for the extension.
-          ignoreDefaultArgs: ['--enable-automation'],
-          args: mode === 'disable-extension' ? [] : [
+          ignoreDefaultArgs: mode === 'cdp-unpacked' ? ['--enable-automation', '--disable-extensions'] : ['--enable-automation'],
+          args: mode === 'disable-extension' ? [] : mode === 'cdp-unpacked' ? [
+            '--enable-unsafe-extension-debugging',
+          ] : [
             `--disable-extensions-except=${pathToExtension}`,
             `--load-extension=${pathToExtension}`,
           ],
         });
+
+        if (mode === 'cdp-unpacked') {
+          const cdp = await browserContext.browser()!.newBrowserCDPSession();
+          await cdp.send('Extensions.loadUnpacked', { path: pathToExtension });
+          await cdp.detach();
+        }
 
         // MV3 service workers start lazily; wait for the extension's
         // background to be ready so tests can reach `chrome.*` via it.

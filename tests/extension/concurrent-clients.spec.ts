@@ -91,9 +91,10 @@ test.fixme(`token-bypass: connect.html does not leak into another client's group
   const [sw] = browserContext.serviceWorkers();
   const groupedUrls: string[] = await sw.evaluate(async () => {
     const urls: string[] = [];
-    for (const g of await chrome.tabGroups.query({ color: 'green' }))
+    for (const g of await chrome.tabGroups.query({ color: 'green' })) {
       for (const t of await chrome.tabs.query({ groupId: g.id }))
         urls.push(t.url || '');
+    }
     return urls;
   });
   expect(groupedUrls.filter(u => u.includes('/connect.html'))).toEqual([]);
@@ -170,4 +171,39 @@ test(`token-bypass: retries once after a non-responsive service-worker message`,
       .toHaveResponse({ snapshot: expect.stringContaining('Updated extension page') });
 
   expect(browserContext.serviceWorkers().length).toBeGreaterThan(0);
+});
+
+test(`token-bypass: self-reloads a wedged extension when installed unpacked`, async ({ browserWithExtension, startClient, server }) => {
+  test.setTimeout(60_000);
+  server.setContent('/updated.html', '<title>Updated</title><body>Updated extension page</body>', 'text/html');
+
+  // Install like the chrome://extensions GUI (not --load-extension) so
+  // chrome.runtime.reload() restarts the extension instead of killing it.
+  const browserContext = await browserWithExtension.launch('cdp-unpacked');
+  const tokenPage = await browserContext.newPage();
+  await tokenPage.goto(`chrome-extension://${extensionId}/status.html`);
+  const tokenText = await tokenPage.locator('.auth-token-code').textContent();
+  const [, token] = tokenText?.split('=') || [];
+  await tokenPage.close();
+
+  const swBeforeReload = browserContext.serviceWorkers()[0];
+
+  const { client } = await startClient({
+    args: ['--extension'],
+    env: {
+      PLAYWRIGHT_MCP_EXTENSION_TOKEN: token,
+      PLAYWRIGHT_MCP_CLIENT_NAME: 'self-reload',
+      PWTEST_EXTENSION_USER_DATA_DIR: browserWithExtension.userDataDir,
+      PWMCP_TEST_EXTENSION_HANG_ONCE: '1',
+      PWMCP_TEST_SELF_RELOAD: '1',
+    },
+  });
+  expect(await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/updated.html' } }))
+      .toHaveResponse({ snapshot: expect.stringContaining('Updated extension page') });
+
+  // The recovery went through an extension restart: a fresh service worker
+  // replaced the one the hang was simulated against.
+  const swAfter = browserContext.serviceWorkers();
+  expect(swAfter.length).toBeGreaterThan(0);
+  expect(swAfter).not.toContain(swBeforeReload);
 });
