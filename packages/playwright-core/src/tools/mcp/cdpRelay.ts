@@ -184,8 +184,11 @@ export class CDPRelayServer {
       url.searchParams.set('selfReload', '1');
     const href = url.toString();
 
-    const channel = registry.isChromiumAlias(this._browserChannel) ? 'chromium' : this._browserChannel;
-    let executablePath = this._executablePath;
+    // Managed profiles rely on a command-line-loaded bridge on every launch.
+    // Branded Chrome rejects --load-extension, so use our Chromium distribution.
+    const loadExtension = process.env.PLAYWRIGHT_MCP_LOAD_EXTENSION;
+    const channel = loadExtension || registry.isChromiumAlias(this._browserChannel) ? 'chromium' : this._browserChannel;
+    let executablePath = loadExtension ? undefined : this._executablePath;
     if (!executablePath) {
       const executableInfo = registry.findExecutable(channel);
       if (!executableInfo)
@@ -204,6 +207,8 @@ export class CDPRelayServer {
       args.push(`--user-data-dir=${userDataDir}`);
     if (profileDirectory)
       args.push(`--profile-directory=${profileDirectory}`);
+    if (loadExtension)
+      args.push(`--load-extension=${loadExtension}`);
     if (os.platform() === 'linux' && channel === 'chromium')
       args.push('--no-sandbox');
     args.push(href);
