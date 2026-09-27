@@ -1,4 +1,5 @@
 /**
+ * Modified by rechrome contributors (2026); see MODIFICATIONS.md.
  * Copyright (c) Microsoft Corporation.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");

@@ -1,4 +1,5 @@
 /**
+ * Modified by rechrome contributors (2026); see MODIFICATIONS.md.
  * Copyright (c) Microsoft Corporation.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,12 +17,14 @@
 
 import { resolve } from 'path';
 import { defineConfig } from 'vite';
+import { extensionLicenses } from './licensePlugin';
 import react from '@vitejs/plugin-react';
 import { viteStaticCopy } from 'vite-plugin-static-copy';
 
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [
+    extensionLicenses(),
     react(),
     viteStaticCopy({
       targets: [

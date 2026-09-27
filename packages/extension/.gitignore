@@ -1,1 +1,4 @@
 dist/
+# These release documents are source inputs, not generated package licenses.
+!LICENSE
+!NOTICE
