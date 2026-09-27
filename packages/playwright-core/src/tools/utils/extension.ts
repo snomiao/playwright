@@ -42,16 +42,20 @@ export async function isPlaywrightExtensionInstalled(userDataDir: string): Promi
 }
 
 async function isExtensionInstalledInProfile(profileDir: string): Promise<boolean> {
-  // Covers two install shapes: web store drops the extension into <profile>/Extensions/<id>;
-  // `--load-extension` does not, and only shows up as the id inside <profile>/Preferences.
+  // Covers three install shapes: web store drops the extension into <profile>/Extensions/<id>;
+  // `--load-extension` does not, and only shows up as the id inside <profile>/Preferences;
+  // a GUI "Load unpacked" install is recorded in <profile>/Secure Preferences instead.
   if (await pathExists(path.join(profileDir, 'Extensions', playwrightExtensionId)))
     return true;
-  try {
-    const prefs = await fs.promises.readFile(path.join(profileDir, 'Preferences'), 'utf-8');
-    return prefs.includes(`"${playwrightExtensionId}"`);
-  } catch {
-    return false;
+  for (const prefsFile of ['Preferences', 'Secure Preferences']) {
+    try {
+      const prefs = await fs.promises.readFile(path.join(profileDir, prefsFile), 'utf-8');
+      if (prefs.includes(`"${playwrightExtensionId}"`))
+        return true;
+    } catch {
+    }
   }
+  return false;
 }
 
 async function pathExists(p: string): Promise<boolean> {
