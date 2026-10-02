@@ -210,6 +210,9 @@ export class CDPRelayServer {
     if (loadExtension) {
       // Chromium 137+ ignores --load-extension unless this feature is turned off.
       args.push(`--load-extension=${loadExtension}`, '--disable-features=DisableLoadExtensionCommandLineSwitch');
+      // Provisioning skips onboarding; every later managed launch must do so too.
+      // Otherwise a fresh profile opens chrome://intro/ and drops the connect URL.
+      args.push('--no-first-run', '--no-default-browser-check');
     }
     if (os.platform() === 'linux' && channel === 'chromium')
       args.push('--no-sandbox');
