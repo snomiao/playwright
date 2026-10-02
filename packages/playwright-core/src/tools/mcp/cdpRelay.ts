@@ -207,8 +207,10 @@ export class CDPRelayServer {
       args.push(`--user-data-dir=${userDataDir}`);
     if (profileDirectory)
       args.push(`--profile-directory=${profileDirectory}`);
-    if (loadExtension)
-      args.push(`--load-extension=${loadExtension}`);
+    if (loadExtension) {
+      // Chromium 137+ ignores --load-extension unless this feature is turned off.
+      args.push(`--load-extension=${loadExtension}`, '--disable-features=DisableLoadExtensionCommandLineSwitch');
+    }
     if (os.platform() === 'linux' && channel === 'chromium')
       args.push('--no-sandbox');
     args.push(href);
