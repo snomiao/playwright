@@ -20,6 +20,10 @@ import path from 'path';
 
 test.skip(({ protocolVersion }) => protocolVersion === 1, 'Concurrent clients require protocol v2');
 
+// Cold headed-browser startup can exceed the default 30s on a shared host.
+// This test budget does not change the relay's 30s handshake deadline.
+test.describe.configure({ timeout: 180_000 });
+
 // Two MCP clients connecting to the SAME Chrome profile must coexist: connecting
 // the second client must NOT evict the first. Each client keeps its own tab group,
 // titled by its PLAYWRIGHT_MCP_CLIENT_NAME so the groups are distinguishable.
@@ -150,7 +154,6 @@ test(`token-bypass: concurrent clients get distinct named groups`, async ({ brow
 });
 
 test(`token-bypass: retries once after a non-responsive service-worker message`, async ({ browserWithExtension, startClient, server }) => {
-  test.setTimeout(60_000);
   server.setContent('/updated.html', '<title>Updated</title><body>Updated extension page</body>', 'text/html');
 
   const browserContext = await browserWithExtension.launch();
@@ -176,7 +179,6 @@ test(`token-bypass: retries once after a non-responsive service-worker message`,
 });
 
 test(`token-bypass: delayed worker recovery preserves another live client`, async ({ browserWithExtension, startClient, server }, testInfo) => {
-  test.setTimeout(60_000);
   server.setContent('/a.html', '<body>Existing lane</body>', 'text/html');
   server.setContent('/b.html', '<body>Recovered lane</body>', 'text/html');
   const context = await browserWithExtension.launch('cdp-unpacked');
@@ -208,7 +210,10 @@ test(`token-bypass: delayed worker recovery preserves another live client`, asyn
   }
   expect(logs.some(log => log.includes('"phase":"recovery-page"'))).toBe(true);
   expect(await a.callTool({ name: 'browser_snapshot', arguments: {} })).toHaveResponse({ inlineSnapshot: expect.stringContaining('Existing lane') });
-  await expect.poll(() => context.pages().filter(p => p.url().includes('testHangOnce=1')).length).toBe(0);
+  // A sibling page may be protected by another live tab group. In that case
+  // its own 30-second attempt deadline, rather than worker cleanup, retires it.
+  await expect.poll(() => context.pages().filter(p => p.url().includes('testHangOnce=1')).length, { timeout: 40_000 }).toBe(0);
+  expect(await a.callTool({ name: 'browser_snapshot', arguments: {} })).toHaveResponse({ inlineSnapshot: expect.stringContaining('Existing lane') });
 });
 
 test(`token-bypass: retires only its owned expired connection page`, async ({ browserWithExtension, server }) => {
