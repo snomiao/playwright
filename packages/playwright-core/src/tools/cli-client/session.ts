@@ -15,6 +15,7 @@
  */
 
 import { spawn } from 'child_process';
+import { randomUUID } from 'crypto';
 
 import fs from 'fs';
 import net from 'net';
@@ -116,8 +117,8 @@ export class Session {
 
     const cliPath = libPath('entry', 'cliDaemon.js');
     const sessionName = resolveSessionName(cliArgs.session as string);
-    const errLog = path.join(clientInfo.daemonProfilesDir, sessionName + '.err');
-    const err = fs.openSync(errLog, 'w');
+    const errLog = path.join(clientInfo.daemonProfilesDir, sessionName + '-' + randomUUID() + '.err');
+    const err = fs.openSync(errLog, 'wx', 0o600);
 
     const args = [
       cliPath,

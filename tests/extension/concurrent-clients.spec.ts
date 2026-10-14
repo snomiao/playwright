@@ -15,6 +15,8 @@
  */
 
 import { test, expect, connectAndNavigate, startWithExtensionFlag, extensionId } from './extension-fixtures';
+import fs from 'fs/promises';
+import path from 'path';
 
 test.skip(({ protocolVersion }) => protocolVersion === 1, 'Concurrent clients require protocol v2');
 
@@ -173,37 +175,58 @@ test(`token-bypass: retries once after a non-responsive service-worker message`,
   expect(browserContext.serviceWorkers().length).toBeGreaterThan(0);
 });
 
-test(`token-bypass: self-reloads a wedged extension when installed unpacked`, async ({ browserWithExtension, startClient, server }) => {
+test(`token-bypass: delayed worker recovery preserves another live client`, async ({ browserWithExtension, startClient, server }, testInfo) => {
   test.setTimeout(60_000);
-  server.setContent('/updated.html', '<title>Updated</title><body>Updated extension page</body>', 'text/html');
-
-  // Install like the chrome://extensions GUI (not --load-extension) so
-  // chrome.runtime.reload() restarts the extension instead of killing it.
-  const browserContext = await browserWithExtension.launch('cdp-unpacked');
-  const tokenPage = await browserContext.newPage();
+  server.setContent('/a.html', '<body>Existing lane</body>', 'text/html');
+  server.setContent('/b.html', '<body>Recovered lane</body>', 'text/html');
+  const context = await browserWithExtension.launch('cdp-unpacked');
+  const tokenPage = await context.newPage();
   await tokenPage.goto(`chrome-extension://${extensionId}/status.html`);
-  const tokenText = await tokenPage.locator('.auth-token-code').textContent();
-  const [, token] = tokenText?.split('=') || [];
+  const [, token] = (await tokenPage.locator('.auth-token-code').textContent())?.split('=') || [];
   await tokenPage.close();
+  const start = async (hang: boolean) => (await startClient({ args: ['--extension'], env: {
+    PLAYWRIGHT_MCP_EXTENSION_TOKEN: token,
+    PLAYWRIGHT_MCP_BRIDGE_LOG_DIR: testInfo.outputPath('bridge-logs'),
+    PWTEST_EXTENSION_USER_DATA_DIR: browserWithExtension.userDataDir,
+    ...(hang ? { PWMCP_TEST_EXTENSION_HANG_ONCE: '1', PWMCP_TEST_SELF_RELOAD: '1' } : {}),
+  } })).client;
+  const a = await start(false);
+  expect((await a.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/a.html' } })).isError).toBeFalsy();
+  const worker = context.serviceWorkers()[0];
+  const b = await start(true);
+  expect((await b.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/b.html' } })).isError).toBeFalsy();
+  expect(context.serviceWorkers()).toContain(worker);
+  const logDir = testInfo.outputPath('bridge-logs');
+  const files = await fs.readdir(logDir);
+  expect(files).toHaveLength(2);
+  const logs = await Promise.all(files.map(file => fs.readFile(path.join(logDir, file), 'utf8')));
+  for (const log of logs) {
+    expect(log).not.toContain(token!);
+    expect(log).not.toContain('://');
+    expect(log).toContain('"phase":"ws-accepted"');
+    expect(log).toContain('"phase":"initialized"');
+  }
+  expect(logs.some(log => log.includes('"phase":"recovery-page"'))).toBe(true);
+  expect(await a.callTool({ name: 'browser_snapshot', arguments: {} })).toHaveResponse({ inlineSnapshot: expect.stringContaining('Existing lane') });
+  await expect.poll(() => context.pages().filter(p => p.url().includes('testHangOnce=1')).length).toBe(0);
+});
 
-  const swBeforeReload = browserContext.serviceWorkers()[0];
-
-  const { client } = await startClient({
-    args: ['--extension'],
-    env: {
-      PLAYWRIGHT_MCP_EXTENSION_TOKEN: token,
-      PLAYWRIGHT_MCP_CLIENT_NAME: 'self-reload',
-      PWTEST_EXTENSION_USER_DATA_DIR: browserWithExtension.userDataDir,
-      PWMCP_TEST_EXTENSION_HANG_ONCE: '1',
-      PWMCP_TEST_SELF_RELOAD: '1',
-    },
-  });
-  expect(await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/updated.html' } }))
-      .toHaveResponse({ snapshot: expect.stringContaining('Updated extension page') });
-
-  // The recovery went through an extension restart: a fresh service worker
-  // replaced the one the hang was simulated against.
-  const swAfter = browserContext.serviceWorkers();
-  expect(swAfter.length).toBeGreaterThan(0);
-  expect(swAfter).not.toContain(swBeforeReload);
+test(`token-bypass: retires only its owned expired connection page`, async ({ browserWithExtension, server }) => {
+  const context = await browserWithExtension.launch();
+  const tokenPage = await context.newPage();
+  await tokenPage.goto(`chrome-extension://${extensionId}/status.html`);
+  const [, token] = (await tokenPage.locator('.auth-token-code').textContent())?.split('=') || [];
+  await tokenPage.close();
+  const url = new URL(`chrome-extension://${extensionId}/connect.html`);
+  url.searchParams.set('mcpRelayUrl', server.PREFIX.replace('http:', 'ws:') + '/no-relay');
+  url.searchParams.set('protocolVersion', '2');
+  url.searchParams.set('token', token!);
+  const unrelated = await context.newPage();
+  await unrelated.goto(url.toString());
+  const owned = await context.newPage();
+  url.searchParams.set('attempt', '00000000-0000-4000-8000-000000000001');
+  url.searchParams.set('expires', String(Date.now() + 1000));
+  await owned.goto(url.toString());
+  await expect.poll(() => owned.isClosed()).toBe(true);
+  expect(unrelated.isClosed()).toBe(false);
 });

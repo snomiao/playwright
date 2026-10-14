@@ -28,28 +28,14 @@ type Status =
 
 const SUPPORTED_PROTOCOL_VERSION = 2;
 const BACKGROUND_RESPONSE_TIMEOUT_MS = 10_000;
-const SELF_RELOAD_GUARD_KEY = 'connect-self-reload-at';
-const SELF_RELOAD_MIN_INTERVAL_MS = 60_000;
-
-// A wedged MV3 worker cannot be revived by reopening pages — but an extension
-// page can call chrome.runtime.reload(), which reaches the browser process
-// directly (no service worker involved) and restarts the whole extension. The
-// relay's recovery page, opened at 12s against the same endpoint, then talks to
-// the fresh worker. Only the relay knows whether reload is safe (it kills
-// --load-extension installs for good), so it opts in via selfReload=1.
-// localStorage (which survives the reload, like the auth token) rate-limits
-// reloads so a persistently broken extension cannot loop — Chrome disables
-// extensions that reload too frequently.
-function attemptExtensionSelfReload(): boolean {
-  if (new URLSearchParams(window.location.search).get('selfReload') !== '1')
-    return false;
-  const last = Number(localStorage.getItem(SELF_RELOAD_GUARD_KEY) || 0);
-  const now = Date.now();
-  if (now - last < SELF_RELOAD_MIN_INTERVAL_MS)
-    return false;
-  localStorage.setItem(SELF_RELOAD_GUARD_KEY, String(now));
-  chrome.runtime.reload();
-  return true;
+// Only this exact attempt page may retire itself. Never close a tab that has
+// navigated, nor an unmarked/user-opened extension page.
+async function retireExpiredAttempt(originalUrl: string): Promise<void> {
+  const params = new URL(originalUrl).searchParams;
+  if (!/^[0-9a-f-]{36}$/.test(params.get('attempt') || '')) return;
+  const tab = await chrome.tabs.getCurrent();
+  if (tab?.id !== undefined && tab.url === originalUrl)
+    await chrome.tabs.remove(tab.id);
 }
 
 async function sendMessageWithTimeout(message: unknown, simulateHang = false): Promise<any> {
@@ -78,6 +64,14 @@ const ConnectApp: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    const originalUrl = window.location.href;
+    const expiry = Number(new URL(originalUrl).searchParams.get('expires'));
+    let connected = false;
+    const onConnected = () => { connected = true; };
+    window.addEventListener('bridge-connected', onConnected);
+    const expiryTimer = Number.isFinite(expiry) && expiry > 0 ? setTimeout(() => {
+      if (!connected) void retireExpiredAttempt(originalUrl).catch(() => {});
+    }, Math.max(0, Math.min(expiry - Date.now(), 2_147_483_647))) : undefined;
     const runAsync = async () => {
       const params = new URLSearchParams(window.location.search);
       const relayUrl = params.get('mcpRelayUrl');
@@ -133,17 +127,15 @@ const ConnectApp: React.FC = () => {
       let response;
       try {
         response = await sendMessageWithTimeout(
-            { type: 'connectionRequested', mcpRelayUrl: relayUrl, protocolVersion: requestedVersion },
+            { type: 'connectionRequested', mcpRelayUrl: relayUrl, protocolVersion: requestedVersion, recoveryAttempt },
             params.get('testHangOnce') === '1' && !recoveryAttempt);
       } catch (error: any) {
-        // A wedged MV3 worker can leave sendMessage pending forever. Restart the
-        // extension so the relay's recovery page (opened after 12s) finds a fresh
-        // worker. recoveryAttempt=1 prevents a persistent failure from looping.
+        // A delayed worker can leave this message pending. The relay opens one
+        // fresh page after 12s; its worker-owned cleanup is limited to this attempt.
+        // recoveryAttempt=1 prevents a persistent failure from looping.
         if (hasAutomationToken && !recoveryAttempt) {
-          const reloading = attemptExtensionSelfReload();
-          setError(reloading
-            ? 'Extension service worker is not responding. Reloading extension and retrying…'
-            : 'Extension service worker is not responding. Retrying once…');
+          // Recovery never reloads the profile's worker: other lanes may be live.
+          setError('Extension service worker is not responding. Retrying once…');
           return;
         }
         setError(`Extension service worker did not recover: ${error.message}`);
@@ -158,7 +150,7 @@ const ConnectApp: React.FC = () => {
       const token = params.get('token');
       if (token === expectedToken) {
         // Pass the freshly parsed name — setClientInfo above hasn't applied yet.
-        await handleConnectToTab(undefined, info);
+        connected = !!(await handleConnectToTab(undefined, info));
         return;
       }
       if (token) {
@@ -178,7 +170,7 @@ const ConnectApp: React.FC = () => {
     const keepalive = setInterval(() => {
       chrome.runtime.sendMessage({ type: 'keepalive' }).catch(() => {});
     }, 20_000);
-    return () => clearInterval(keepalive);
+    return () => { clearInterval(keepalive); clearTimeout(expiryTimer); window.removeEventListener('bridge-connected', onConnected); };
   }, []);
 
   const loadTabs = useCallback(async () => {
@@ -206,6 +198,8 @@ const ConnectApp: React.FC = () => {
 
       if (response?.success) {
         setStatus({ type: 'connected', message: `"${clientName}" connected.` });
+        window.dispatchEvent(new Event('bridge-connected'));
+        return true;
       } else {
         setStatus({
           type: 'error',
@@ -218,10 +212,7 @@ const ConnectApp: React.FC = () => {
       const recoveryAttempt = new URLSearchParams(window.location.search).get('recoveryAttempt') === '1';
       const hasAutomationToken = !!new URLSearchParams(window.location.search).get('token');
       if (hasAutomationToken && !recoveryAttempt) {
-        const reloading = attemptExtensionSelfReload();
-        setError(reloading
-          ? 'Extension service worker stopped during connection. Reloading extension and retrying…'
-          : 'Extension service worker stopped during connection. Retrying once…');
+        setError('Extension service worker stopped during connection. Retrying once…');
         return;
       }
       setStatus({
@@ -229,6 +220,7 @@ const ConnectApp: React.FC = () => {
         message: `"${clientName}" failed to connect: ${e}`
       });
     }
+    return false;
   }, [clientInfo, setError]);
 
   useEffect(() => {

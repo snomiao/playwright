@@ -23,6 +23,7 @@ type PageMessage = {
   type: 'connectionRequested';
   mcpRelayUrl: string;
   protocolVersion: number;
+  recoveryAttempt?: boolean;
 } | {
   type: 'getTabs';
 } | {
@@ -39,7 +40,7 @@ type PageMessage = {
   type: 'keepalive';
 };
 
-class PlaywrightExtension {
+export class PlaywrightExtension {
   // Multiple concurrent clients can share one Chrome profile — each connection gets
   // its own ConnectedTabGroup (its own Chrome tab group), so a new client no longer
   // evicts existing ones. Tabs stay isolated by per-group _groupId / attachedTabs.
@@ -60,7 +61,10 @@ class PlaywrightExtension {
   private _onMessage(message: PageMessage, sender: chrome.runtime.MessageSender, sendResponse: (response: any) => void) {
     switch (message.type) {
       case 'connectionRequested':
-        this._pendingConnections.create(sender.tab!.id!, message.mcpRelayUrl, message.protocolVersion).then(
+        (async () => {
+          if (message.recoveryAttempt) await this._retireSupersededPages(sender);
+          await this._pendingConnections.create(sender.tab!.id!, message.mcpRelayUrl, message.protocolVersion);
+        })().then(
             () => sendResponse({ success: true }),
             (error: any) => sendResponse({ success: false, error: error.message }));
         return true;
@@ -99,6 +103,27 @@ class PlaywrightExtension {
         // the MV3 service worker idle timer and keeps the relay WebSocket alive.
         return false;
     }
+  }
+
+  // The single worker coordinates recovery within this profile. It never reloads
+  // itself or touches live groups: only sibling connect pages for the same relay
+  // attempt can be retired. A different lane/attempt is outside this ownership.
+  private async _retireSupersededPages(sender: chrome.runtime.MessageSender): Promise<void> {
+    const current = new URL(sender.url || sender.tab?.url || 'about:blank');
+    const attempt = current.searchParams.get('attempt');
+    const relay = current.searchParams.get('mcpRelayUrl');
+    if (current.protocol !== 'chrome-extension:' || current.host !== chrome.runtime.id || current.pathname !== '/connect.html'
+        || !/^[0-9a-f-]{36}$/.test(attempt || '') || !relay) return;
+    const attached = new Set([...this._activeGroups].flatMap(g => g.connectedTabIds()));
+    const tabs = await chrome.tabs.query({});
+    await Promise.all(tabs.map(async tab => {
+      if (tab.id === undefined || tab.id === sender.tab?.id || attached.has(tab.id) || !tab.url) return;
+      const other = new URL(tab.url);
+      if (other.protocol !== current.protocol || other.host !== current.host || other.pathname !== current.pathname
+          || other.searchParams.get('attempt') !== attempt || other.searchParams.get('mcpRelayUrl') !== relay) return;
+      const latest = await chrome.tabs.get(tab.id).catch(() => undefined);
+      if (latest?.url === tab.url) await chrome.tabs.remove(tab.id).catch(() => {});
+    }));
   }
 
   private async _connectTab(selectorTabId: number, tab: chrome.tabs.Tab & { id: number }, clientName: string | undefined): Promise<void> {

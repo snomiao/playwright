@@ -27,6 +27,7 @@
  */
 
 import { spawn } from 'child_process';
+import { BridgeAttempt } from './bridgeAttempt';
 import http from 'http';
 import os from 'os';
 import path from 'path';
@@ -75,6 +76,8 @@ type CDPCommand = {
 type CDPResponse = CDPMessage;
 
 export class CDPRelayServer {
+  private _attempt = new BridgeAttempt();
+  private _attemptExpires = 0;
   private _wsHost: string;
   private _browserChannel: string;
   private _executablePath?: string;
@@ -123,6 +126,8 @@ export class CDPRelayServer {
 
   async establishExtensionConnection(clientName: string) {
     debugLogger('Establishing extension connection');
+    this._attemptExpires = Date.now() + extensionConnectionTimeout();
+    this._attempt.record('launch');
     this._openConnectPageInBrowser(clientName);
     debugLogger('Waiting for incoming extension connection');
     const timeout = extensionConnectionTimeout();
@@ -134,6 +139,7 @@ export class CDPRelayServer {
     const recoveryTimer = process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN ? setTimeout(() => {
       if (!established) {
         debugLogger('Retrying extension connection after service worker recovery');
+        this._attempt.record('recovery-page');
         this._openConnectPageInBrowser(clientName, true);
       }
     }, 12_000) : undefined;
@@ -147,6 +153,10 @@ export class CDPRelayServer {
             `Extension connection timeout after ${timeout}ms. Automatic recovery retry failed; reload the Playwright MCP Bridge extension at chrome://extensions and retry.`)), timeout)),
       ]);
       established = true;
+      this._attempt.record('initialized');
+    } catch (error) {
+      this._attempt.record('timeout');
+      throw error;
     } finally {
       clearTimeout(recoveryTimer);
     }
@@ -167,6 +177,8 @@ export class CDPRelayServer {
     };
     url.searchParams.set('client', JSON.stringify(client));
     url.searchParams.set('protocolVersion', this._protocolVersion.toString());
+    url.searchParams.set('attempt', this._attempt.id);
+    url.searchParams.set('expires', String(this._attemptExpires));
     if (recoveryAttempt)
       url.searchParams.set('recoveryAttempt', '1');
     if (!recoveryAttempt && process.env.PWMCP_TEST_EXTENSION_HANG_ONCE)
@@ -174,14 +186,8 @@ export class CDPRelayServer {
     const token = process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN;
     if (token)
       url.searchParams.set('token', token);
-    // chrome.runtime.reload() revives a wedged service worker for extensions
-    // installed unpacked via the chrome://extensions GUI, but permanently kills
-    // ones loaded with --load-extension (Chrome only re-scans that flag at
-    // startup). Only authorize the connect page to self-reload outside
-    // command-line-load flows (managed profiles, test harness).
-    const commandLineLoaded = !!(process.env.PLAYWRIGHT_MCP_LOAD_EXTENSION || process.env.PWTEST_EXTENSION_USER_DATA_DIR);
-    if (token && (!commandLineLoaded || process.env.PWMCP_TEST_SELF_RELOAD === '1'))
-      url.searchParams.set('selfReload', '1');
+    // Recovery is coordinated by the profile's worker. A stalled client must
+    // never reload the extension and disconnect unrelated live clients.
     const href = url.toString();
 
     // Managed profiles rely on a command-line-loaded bridge on every launch.
@@ -214,12 +220,13 @@ export class CDPRelayServer {
     if (os.platform() === 'linux' && channel === 'chromium')
       args.push('--no-sandbox');
     args.push(href);
-    spawn(executablePath, args, {
+    const launcher = spawn(executablePath, args, {
       windowsHide: true,
       detached: true,
       shell: false,
       stdio: 'ignore',
     });
+    launcher.on('error', () => this._attempt.record('launch-failed'));
   }
 
   stop(): void {
@@ -291,9 +298,11 @@ export class CDPRelayServer {
       ws.close(1000, 'Another extension connection already established');
       return;
     }
+    this._attempt.record('ws-accepted');
     this._extensionConnection = new ExtensionConnection(ws);
     this._extensionConnection.onclose = reason => {
       debugLogger('Extension WebSocket closed:', reason);
+      this._attempt.record('closed');
       this._handler.onExtensionDisconnect(reason);
       this._closeCDPConnection(`Extension disconnected: ${reason}`);
     };
