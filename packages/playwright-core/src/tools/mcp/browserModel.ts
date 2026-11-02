@@ -144,6 +144,11 @@ export class BrowserModel {
     return { success: true };
   }
 
+  // Any attached tab's relay sessionId, for browser-level commands the tab debugger can serve.
+  anyAttachedSessionId(): string | undefined {
+    return this._findTabSession(() => true)?.sessionId;
+  }
+
   getTargetInfo(sessionId: string | undefined): any {
     if (!sessionId)
       return undefined;

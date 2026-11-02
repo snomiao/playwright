@@ -101,6 +101,17 @@ export class ExtensionProtocolV2 implements ExtensionProtocolHandler {
         return { result: await this._model.closeTarget(params?.targetId) };
       case 'Target.getTargetInfo':
         return { result: this._model.getTargetInfo(sessionId) };
+      case 'Storage.getCookies': {
+        // context.cookies() sends this browser-level (no sessionId), which the extension's tab
+        // debugger can't take. Any attached tab's session answers with the profile's whole jar
+        // (HttpOnly included), which is what context.cookies() returns.
+        if (sessionId)
+          return undefined;
+        const tabSessionId = this._model.anyAttachedSessionId();
+        if (!tabSessionId)
+          throw new Error('Storage.getCookies: no tab is attached yet; open a page first');
+        return { result: await this._model.sendCommand(tabSessionId, 'Storage.getCookies', params) };
+      }
     }
     return undefined;
   }
